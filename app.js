@@ -585,7 +585,7 @@ function viewLesson(materialId) {
       <div class="stage">${last
         ? `<h2>암기 포인트</h2><ul>${m.memory_points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
            <h2>확인 질문</h2>${m.check_questions.map(c => `<details><summary>${esc(c.q)}</summary><p>${esc(c.a)}</p></details>`).join('')}`
-        : `<h2>${esc(st.title)}</h2><div class="back">${esc(st.show)}</div><div class="say">${esc(st.say)}</div>`}</div>
+        : `<h2>${esc(st.title)}</h2><div class="back">${esc(st.show)}</div>${st.svg ? `<div class="figure">${st.svg}</div>` : ''}<div class="say">${esc(st.say)}</div>`}</div>
       <div class="dock"><div class="row"><button class="btn" id="prev" ${i === 0 ? 'disabled' : ''}>←</button>
         <button class="btn" id="say">▶ 듣기</button><button class="btn" id="askit">질문</button>
         <button class="btn primary grow" id="nextb" ${last ? 'disabled' : ''}>다음 →</button></div></div></div>`;
