@@ -305,6 +305,7 @@ function viewHome() {
     </header>
 
     <div class="row"><button class="btn primary grow" data-start="free">🎤 바로 질문하기</button><button class="btn" id="sync">🔄 PC와 동기화</button></div>
+    ${(pack?.pc || db.get('pc', null)) ? `<button class="btn wide" id="cam">📷 교재 문제 찍어 PC 튜터로 보내기</button>` : ''}
 
     ${due.length ? `<section class="card"><div class="row"><div class="grow"><h2>다시 볼 것 ${due.length}개</h2>
         <div class="muted small">${[...new Set(due.map(d => d.subject))].join(' · ')}</div></div></div>
@@ -352,6 +353,7 @@ function viewHome() {
     }
   };
   $('#sync').onclick = startSync;
+  if ($('#cam')) $('#cam').onclick = () => { const pc = pack?.pc || db.get('pc', null); location.href = `${pc.url}/lan/cam?t=${encodeURIComponent(pc.token)}`; };
   $('#memo-save').onclick = () => {
     const v = $('#memo').value.trim();
     if (!v) return;

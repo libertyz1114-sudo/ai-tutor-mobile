@@ -1,6 +1,6 @@
 // 오프라인에서도 앱이 열리도록 화면 파일을 기기에 저장해 둔다.
 // 화면 파일을 고치면 VERSION 을 올린다 (그래야 휴대폰이 새 파일을 받는다).
-const VERSION = 'v5';
+const VERSION = 'v6';
 const SDK = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.10.0/+esm';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'voice.js', 'focus.js',
   'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
