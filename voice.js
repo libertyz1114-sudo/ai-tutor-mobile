@@ -2,20 +2,31 @@
 'use strict';
 
 const Speaker = {
-  voice: null,
+  voice: null,      // 한국어 음성
+  enVoice: null,    // 영어 음성 (영어 단어·문장은 이 목소리로 읽는다)
   rate: 1.05,
   buf: '',
   pending: 0,
 
+  // 좋은 음성 순서: 여러 언어를 자연스럽게 읽는 음성(Multilingual) > Natural > Online > 나머지
+  rank(v) { return (/multilingual/i.test(v.name) ? 0 : /natural/i.test(v.name) ? 1 : /online/i.test(v.name) ? 2 : 3); },
+  list(lang) {
+    if (!('speechSynthesis' in window)) return [];
+    return speechSynthesis.getVoices().filter(v => v.lang && v.lang.toLowerCase().startsWith(lang))
+      .sort((a, b) => this.rank(a) - this.rank(b) || (lang === 'en' ? (b.lang === 'en-US') - (a.lang === 'en-US') : 0));
+  },
+  saved(key) { try { return localStorage.getItem(key) || ''; } catch (_) { return ''; } },
+  choose(key, name) { try { localStorage.setItem(key, name); } catch (_) { /* 저장이 안 돼도 이번에는 적용된다 */ } this.pick(); },
+  pick() {
+    const ko = this.list('ko'), en = this.list('en');
+    this.voice = ko.find(v => v.name === this.saved('tts_ko')) || ko[0] || null;
+    this.enVoice = en.find(v => v.name === this.saved('tts_en')) || en[0] || null;
+  },
+
   init() {
     if (!('speechSynthesis' in window)) return;
-    const pick = () => {
-      const ko = speechSynthesis.getVoices().filter(v => v.lang && v.lang.toLowerCase().startsWith('ko'));
-      // Edge의 'Natural' 음성이 가장 자연스럽다. 없으면 온라인 음성, 그다음 아무 한국어 음성.
-      this.voice = ko.find(v => /natural/i.test(v.name)) || ko.find(v => /online/i.test(v.name)) || ko[0] || null;
-    };
-    pick();
-    speechSynthesis.addEventListener('voiceschanged', pick);
+    this.pick();
+    speechSynthesis.addEventListener('voiceschanged', () => this.pick());
   },
 
   get busy() {
@@ -26,16 +37,56 @@ const Speaker = {
     return text.replace(/[*#`_>]/g, ' ').replace(/\s+/g, ' ').trim();
   },
 
+  // 숫자 뒤의 단위는 한국어로 읽게 바꾼다 (영어 음성으로 넘어가지 않게)
+  UNITS: [['kN·m', '킬로뉴턴미터'], ['kN', '킬로뉴턴'], ['MPa', '메가파스칼'], ['GPa', '기가파스칼'], ['kPa', '킬로파스칼'],
+    ['mm²', '제곱밀리미터'], ['cm²', '제곱센티미터'], ['m²', '제곱미터'], ['cm³', '세제곱센티미터'], ['m³', '세제곱미터'],
+    ['mm', '밀리미터'], ['cm', '센티미터'], ['km', '킬로미터'], ['kg', '킬로그램'], ['kV', '킬로볼트'], ['mA', '밀리암페어']],
+  units(text) {
+    for (const [u, word] of this.UNITS) {
+      const re = new RegExp('(?<=[0-9]) ?' + u.replace('·', '[·.]?') + '(?![A-Za-z])', 'g');
+      text = text.replace(re, word);
+    }
+    return text.replace(/p[.] ?p[.]?/gi, '과거분사 ');      // 문법 설명의 p.p.
+  },
+
+  // 글을 한국어 토막과 영어 토막으로 나눈다. 영어 단어가 섞이면 그 부분만 영어 음성으로 읽는다.
+  // 식에 쓰는 한두 글자 기호(P, L, Va, Mmax 등)는 한국어 음성에 둔다.
+  split(text) {
+    const parts = [];
+    const re = /[A-Za-z][A-Za-z'’-]*(?:[ ,;:]+[A-Za-z][A-Za-z'’-]*)*/g;
+    let last = 0, m;
+    const push = (lang, s) => { if (!s.trim()) { if (parts.length) parts[parts.length - 1].text += s; return; }
+      if (parts.length && parts[parts.length - 1].lang === lang) parts[parts.length - 1].text += s; else parts.push({ lang, text: s }); };
+    while ((m = re.exec(text))) {
+      const words = m[0].split(/[ ,;:]+/).filter(Boolean);
+      const english = words.length >= 2 ? words.some(w => w.length >= 2) : (words[0].length >= 3 && !/^[A-Z]?[a-z]?max$|^[A-Z][a-z]?\d*$/.test(words[0]));
+      if (!english) continue;
+      push('ko', text.slice(last, m.index));
+      push('en', m[0]);
+      last = m.index + m[0].length;
+    }
+    push('ko', text.slice(last));
+    return parts;
+  },
+
   say(text) {
-    const t = this.clean(text);
+    const t = this.units(this.clean(text));
     if (!t || !('speechSynthesis' in window)) return;
-    const u = new SpeechSynthesisUtterance(t);
-    u.lang = 'ko-KR';
-    if (this.voice) u.voice = this.voice;
-    u.rate = this.rate;
-    this.pending++;
-    u.onend = u.onerror = () => { this.pending = Math.max(0, this.pending - 1); };
-    speechSynthesis.speak(u);
+    // 여러 언어를 읽는 음성이면 통째로 맡기고, 아니면 영어 부분만 영어 음성으로 넘긴다
+    const whole = !this.enVoice || (this.voice && /multilingual/i.test(this.voice.name));
+    const parts = whole ? [{ lang: 'ko', text: t }] : this.split(t);
+    for (const p of parts) {
+      if (!/[0-9A-Za-z가-힣]/.test(p.text)) continue;      // 기호뿐인 토막은 읽을 것이 없다
+      const u = new SpeechSynthesisUtterance(p.text.trim());
+      const en = p.lang === 'en';
+      u.lang = en ? (this.enVoice.lang || 'en-US') : 'ko-KR';
+      const v = en ? this.enVoice : this.voice;
+      if (v) u.voice = v;
+      u.rate = en ? Math.min(this.rate, 1) : this.rate;      // 영어는 조금 천천히
+      this.pending++;
+      u.onend = u.onerror = () => { this.pending = Math.max(0, this.pending - 1); };
+      speechSynthesis.speak(u);
+    }
   },
 
   // 글자가 흘러들어오는 대로 넣으면, 문장이 끝날 때마다 바로 읽기 시작한다.
