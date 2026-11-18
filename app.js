@@ -34,6 +34,38 @@ function toast(msg, ms = 3500) {
   toastTimer = setTimeout(() => { el.hidden = true; }, ms);
 }
 
+// ───────────────────────── PC와 주고받기 (주소에 실어서) ─────────────────────────
+// PC 화면의 QR을 찍으면 PC가 팩을 압축해 이 앱 주소 뒤(#pack=...)에 붙여 넘겨준다.
+// 결과는 반대로, 압축해서 PC 주소 뒤(#d=...)에 붙여 연다. # 뒷부분은 인터넷으로 나가지 않는다.
+
+async function unsqueeze(text) {
+  const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return JSON.parse(await new Response(stream).text());
+}
+async function squeeze(obj) {
+  const stream = new Blob([JSON.stringify(obj)]).stream().pipeThrough(new CompressionStream('gzip'));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+async function receivePack() {
+  if (!location.hash.startsWith('#pack=')) return false;
+  const data = location.hash.slice(6);
+  history.replaceState(null, '', location.pathname);      // 주소창에서 팩 내용을 지운다
+  try {
+    const p = await unsqueeze(data);
+    if (!p.prompts || !p.id) throw new Error('팩 내용이 맞지 않아요.');
+    if (!db.set('pack', p)) return false;
+    pack = p;
+    toast(`PC에서 팩을 받았어요: 복습 ${p.items.length}개 · 문제 세트 ${p.sets.length}개`, 5000);
+  } catch (e) { toast(`팩을 받지 못했어요: ${e.message}`, 6000); }
+  return true;
+}
+function resultBody() { return { pack_id: pack?.id || null, exported_at: nowIso(), ...log }; }
+
 // ───────────────────────── 복습 항목 ─────────────────────────
 
 function allItems() {
@@ -188,7 +220,7 @@ async function route() {
   if (name === 'settings') return viewSettings();
   return viewHome();
 }
-window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', async () => { await receivePack(); route(); });
 window.addEventListener('pagehide', () => { keepSession(); if (current) db.set('open', current); });
 
 // ───────────────────────── 처음 설정 ─────────────────────────
@@ -199,11 +231,11 @@ function viewSetup() {
     <section class="card">
       <h2>외출 팩이 아직 없어요</h2>
       <ol>
-        <li>PC 튜터 홈의 <b>외출 팩 → 팩 만들기</b>로 파일을 만들어요.</li>
-        <li>그 파일을 구글 드라이브에 올려요.</li>
-        <li>아래 버튼으로 드라이브에서 그 파일을 골라요.</li>
+        <li>PC 튜터 홈에서 <b>📱 휴대폰으로 보내기</b>를 눌러요.</li>
+        <li>PC 화면에 뜬 QR을 이 휴대폰 카메라로 찍어요. (PC와 같은 와이파이)</li>
       </ol>
-      <button class="btn primary wide" id="load">팩 불러오기</button>
+      <p class="muted small">와이파이가 다르면: PC에서 "파일로 만들기" → 구글 드라이브 → 아래 버튼.</p>
+      <button class="btn wide" id="load">파일에서 팩 불러오기</button>
       <input id="file" type="file" accept=".json,application/json" hidden>
     </section>
   </main>`;
@@ -556,7 +588,9 @@ function viewSettings() {
       <button class="btn wide" id="load">새 팩 불러오기</button><input id="file" type="file" accept=".json,application/json" hidden></section>
     <section class="card"><h2>결과 내보내기</h2>
       <p class="muted small">세션 ${log.sessions.length} · 채점 ${log.marks.length} · 메모 ${log.memos.length}. 파일을 구글 드라이브에 올리고, PC 튜터 홈의 "휴대폰 결과 가져오기"로 넣어요. 여러 번 넣어도 한 번만 반영돼요.</p>
-      <button class="btn primary wide" id="export" ${n ? '' : 'disabled'}>결과 파일 만들기</button>
+      ${pack?.pc ? `<button class="btn primary wide" id="send-pc" ${n ? '' : 'disabled'}>PC로 바로 보내기 (같은 와이파이)</button>
+      <div style="height:8px"></div>` : ''}
+      <button class="btn ${pack?.pc ? '' : 'primary'} wide" id="export" ${n ? '' : 'disabled'}>결과 파일 만들기</button>
       <button class="btn ghost wide" id="clear" style="margin-top:8px" ${n ? '' : 'disabled'}>PC에 넣은 뒤 기록 비우기</button></section>
   </main>`;
   app.onclick = navClick;
@@ -574,9 +608,16 @@ function viewSettings() {
       out.textContent = `됐어요: "${text.trim()}" · 첫 글자 ${(first / 1000).toFixed(1)}초`;
     } catch (e) { out.textContent = `실패: ${e.message}`; out.className = 'small err'; }
   };
+  const sendPc = $('#send-pc');
+  if (sendPc) sendPc.onclick = async () => {
+    closeSession();
+    sendPc.disabled = true;
+    // PC 화면을 열면서 결과를 주소 뒤에 실어 보낸다. PC가 꺼져 있거나 와이파이가 다르면 '연결할 수 없음'이 뜬다.
+    location.href = `${pack.pc.url}/lan/recv#t=${encodeURIComponent(pack.pc.token)}&d=${await squeeze(resultBody())}`;
+  };
   $('#export').onclick = async () => {
     closeSession();
-    const body = JSON.stringify({ pack_id: pack?.id || null, exported_at: nowIso(), ...log });
+    const body = JSON.stringify(resultBody());
     const name = `tutor-result-${isoDay()}.json`;
     const file = new File([body], name, { type: 'application/json' });
     try {
@@ -595,4 +636,4 @@ function viewSettings() {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 window.addEventListener('online', () => { if (!location.hash || location.hash === '#/') route(); });
 window.addEventListener('offline', () => { if (!location.hash || location.hash === '#/') route(); });
-route();
+receivePack().then(route);
