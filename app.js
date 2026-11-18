@@ -60,11 +60,37 @@ async function receivePack() {
     if (!p.prompts || !p.id) throw new Error('팩 내용이 맞지 않아요.');
     if (!db.set('pack', p)) return false;
     pack = p;
+    if (p.pc) db.set('pc', p.pc);
+    if (p.synced) {       // 동기화로 받은 팩: 결과는 PC에 이미 들어갔으니 휴대폰 기록을 비운다
+      log = { sessions: [], marks: [], memos: [] }; saveLog();
+      itemState = {}; db.set('items', itemState);
+    }
     toast(`PC에서 팩을 받았어요: 복습 ${p.items.length}개 · 문제 세트 ${p.sets.length}개`, 5000);
   } catch (e) { toast(`팩을 받지 못했어요: ${e.message}`, 6000); }
   return true;
 }
 function resultBody() { return { pack_id: pack?.id || null, exported_at: nowIso(), ...log }; }
+
+// PC와 동기화: 이 휴대폰의 결과를 PC로 보내고, PC의 최신 팩을 받아 온다. 한 번 누르면 PC 화면을 거쳐 앱으로 돌아온다.
+// 처음에는 PC 화면에 보이는 주소와 연결 코드를 한 번 입력한다. 그 뒤로는 팩에 담겨 온 정보로 바로 간다.
+async function syncWithPc() {
+  let pc = pack?.pc || db.get('pc', null);
+  if (!pc) {
+    const ip = prompt('PC 주소 (PC 튜터 홈의 외출 팩 칸에 보여요)\n예: 192.168.0.10');
+    if (!ip) return;
+    const code = prompt('연결 코드 6자리');
+    if (!code) return;
+    pc = { url: `http://${ip.trim().replace(/^https?:\/\//, '').replace(/[:/].*$/, '')}:8765`, token: code.trim() };
+    db.set('pc', pc);
+  }
+  closeSession();
+  const has = log.sessions.length + log.marks.length + log.memos.length;
+  const t = encodeURIComponent(pc.token);
+  location.href = has
+    ? `${pc.url}/lan/recv#next=pull&t=${t}&d=${await squeeze(resultBody())}`
+    : `${pc.url}/lan/pull?t=${t}`;
+}
+function forgetPc() { db.set('pc', null); if (pack?.pc) { delete pack.pc; db.set('pack', pack); } }
 
 // ───────────────────────── 복습 항목 ─────────────────────────
 
@@ -231,17 +257,20 @@ function viewSetup() {
     <section class="card">
       <h2>외출 팩이 아직 없어요</h2>
       <ol>
-        <li>PC 튜터 홈에서 <b>📱 휴대폰으로 보내기</b>를 눌러요.</li>
-        <li>PC 화면에 뜬 QR을 이 휴대폰 카메라로 찍어요. (PC와 같은 와이파이)</li>
+        <li>PC에서 튜터를 켜 둬요. (휴대폰과 같은 와이파이)</li>
+        <li>아래 <b>PC와 동기화</b>를 누르고, PC 튜터 홈의 "외출 팩" 칸에 보이는 주소와 연결 코드를 넣어요. 처음 한 번만 해요.</li>
       </ol>
+      <button class="btn primary wide" id="sync">🔄 PC와 동기화</button>
       <p class="muted small">와이파이가 다르면: PC에서 "파일로 만들기" → 구글 드라이브 → 아래 버튼.</p>
       <button class="btn wide" id="load">파일에서 팩 불러오기</button>
       <input id="file" type="file" accept=".json,application/json" hidden>
     </section>
   </main>`;
   wirePackLoader();
+  $('#sync').onclick = startSync;
   app.onclick = navClick;
 }
+function startSync() { syncWithPc().catch(e => toast(e.message)); }
 function navClick(e) { const g = e.target.closest('[data-go]'); if (g) go(g.dataset.go); }
 function wirePackLoader() {
   $('#load').onclick = () => $('#file').click();
@@ -275,7 +304,7 @@ function viewHome() {
       <div class="row">${navigator.onLine ? '' : '<span class="offline">오프라인</span>'}<button class="btn small ghost" data-go="#/settings">설정</button></div>
     </header>
 
-    <button class="btn primary wide" data-start="free">🎤 바로 질문하기</button>
+    <div class="row"><button class="btn primary grow" data-start="free">🎤 바로 질문하기</button><button class="btn" id="sync">🔄 PC와 동기화</button></div>
 
     ${due.length ? `<section class="card"><div class="row"><div class="grow"><h2>다시 볼 것 ${due.length}개</h2>
         <div class="muted small">${[...new Set(due.map(d => d.subject))].join(' · ')}</div></div></div>
@@ -322,6 +351,7 @@ function viewHome() {
       return go('#/talk');
     }
   };
+  $('#sync').onclick = startSync;
   $('#memo-save').onclick = () => {
     const v = $('#memo').value.trim();
     if (!v) return;
@@ -588,9 +618,9 @@ function viewSettings() {
       <button class="btn wide" id="load">새 팩 불러오기</button><input id="file" type="file" accept=".json,application/json" hidden></section>
     <section class="card"><h2>결과 내보내기</h2>
       <p class="muted small">세션 ${log.sessions.length} · 채점 ${log.marks.length} · 메모 ${log.memos.length}. 파일을 구글 드라이브에 올리고, PC 튜터 홈의 "휴대폰 결과 가져오기"로 넣어요. 여러 번 넣어도 한 번만 반영돼요.</p>
-      ${pack?.pc ? `<button class="btn primary wide" id="send-pc" ${n ? '' : 'disabled'}>PC로 바로 보내기 (같은 와이파이)</button>
-      <div style="height:8px"></div>` : ''}
-      <button class="btn ${pack?.pc ? '' : 'primary'} wide" id="export" ${n ? '' : 'disabled'}>결과 파일 만들기</button>
+      <button class="btn primary wide" id="sync">🔄 PC와 동기화 (같은 와이파이)</button>
+      <p class="muted small">결과를 PC로 보내고 새 팩을 받아 와요. ${db.get('pc', null) || pack?.pc ? `연결된 PC: ${esc((pack?.pc || db.get('pc', {})).url)} <a href="#" id="forget">다시 연결</a>` : '처음에는 PC 주소와 연결 코드를 물어봐요.'}</p>
+      <button class="btn wide" id="export" ${n ? '' : 'disabled'}>결과 파일 만들기 (드라이브용)</button>
       <button class="btn ghost wide" id="clear" style="margin-top:8px" ${n ? '' : 'disabled'}>PC에 넣은 뒤 기록 비우기</button></section>
   </main>`;
   app.onclick = navClick;
@@ -608,13 +638,9 @@ function viewSettings() {
       out.textContent = `됐어요: "${text.trim()}" · 첫 글자 ${(first / 1000).toFixed(1)}초`;
     } catch (e) { out.textContent = `실패: ${e.message}`; out.className = 'small err'; }
   };
-  const sendPc = $('#send-pc');
-  if (sendPc) sendPc.onclick = async () => {
-    closeSession();
-    sendPc.disabled = true;
-    // PC 화면을 열면서 결과를 주소 뒤에 실어 보낸다. PC가 꺼져 있거나 와이파이가 다르면 '연결할 수 없음'이 뜬다.
-    location.href = `${pack.pc.url}/lan/recv#t=${encodeURIComponent(pack.pc.token)}&d=${await squeeze(resultBody())}`;
-  };
+  $('#sync').onclick = startSync;
+  const forget = $('#forget');
+  if (forget) forget.onclick = (e) => { e.preventDefault(); forgetPc(); toast('연결 정보를 지웠어요. 동기화를 누르면 다시 물어봐요.'); route(); };
   $('#export').onclick = async () => {
     closeSession();
     const body = JSON.stringify(resultBody());
